@@ -1,0 +1,311 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>XDoor 空投批量查询（boost）</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body { font-family: system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,"PingFang SC","Microsoft YaHei",sans-serif; margin: 18px; line-height: 1.4; }
+    h1 { font-size: 18px; margin: 0 0 12px; }
+    .layout { display:grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .card { border: 1px solid rgba(127,127,127,.35); border-radius: 10px; padding: 12px; }
+    label { display:block; font-size: 12px; opacity: .9; margin-bottom: 6px; }
+    textarea { width: 100%; box-sizing: border-box; font-size: 14px; min-height: 280px; resize: vertical; padding: 10px; }
+    button { padding: 10px 12px; border-radius: 10px; border: 1px solid rgba(127,127,127,.35); cursor: pointer; font-size: 14px; }
+    button:disabled { opacity: .6; cursor: not-allowed; }
+    .btns { display:flex; gap:10px; flex-wrap:wrap; margin-top:10px; }
+    .status { margin-top:10px; font-size: 12px; white-space: pre-wrap; padding: 10px; border-radius: 10px; background: rgba(127,127,127,.10); }
+    .mono { font-family: ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,"Liberation Mono","Courier New",monospace; }
+    .pill { display:inline-block; padding: 2px 8px; border:1px solid rgba(127,127,127,.35); border-radius: 999px; font-size: 12px; }
+    .ok { color:#1f8f3a; } .bad { color:#c23b22; } .muted { opacity:.7; }
+    table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+    th, td { border-bottom: 1px solid rgba(127,127,127,.25); padding: 8px 6px; text-align: left; font-size: 13px; vertical-align: top; }
+    th { position: sticky; top: 0; background: rgba(127,127,127,.10); backdrop-filter: blur(6px); }
+    .right { text-align:right; }
+    @media (max-width: 980px){ .layout{ grid-template-columns:1fr; } }
+  </style>
+</head>
+
+<body>
+  <h1>XDoor 空投批量查询（boost）— 自建反代版</h1>
+
+  <div class="layout">
+    <div class="card">
+      <label>地址列表（支持一行一个 / 空格 / 逗号分隔，会自动去重）</label>
+      <textarea id="addrInput" class="mono" placeholder="0x...\n0x...\n0x..."></textarea>
+
+      <div class="btns">
+        <button id="btnStart">开始查询</button>
+        <button id="btnStop" disabled>停止</button>
+        <button id="btnClear">清空结果</button>
+      </div>
+
+      <div id="statusBox" class="status">状态：等待输入地址。</div>
+      <div class="muted" style="font-size:12px; margin-top:10px;">
+        本页调用同域接口：<span class="mono">/api/airdrop?address=0x...</span>（Cloudflare Pages Functions 反向代理）
+      </div>
+    </div>
+
+    <div class="card">
+      <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
+        <span class="pill">地址数：<b id="addrCount">0</b></span>
+        <span class="pill">已完成：<b id="doneCount">0</b></span>
+        <span class="pill">成功：<b id="okCount" class="ok">0</b></span>
+        <span class="pill">失败：<b id="failCount" class="bad">0</b></span>
+        <span class="pill">合计空投：<b id="sumFmt" class="mono">0</b></span>
+      </div>
+
+      <table>
+        <thead>
+          <tr>
+            <th style="width: 55%;">地址</th>
+            <th style="width: 25%;">空投数量</th>
+            <th style="width: 20%;">是否成功</th>
+          </tr>
+        </thead>
+        <tbody id="resultBody">
+          <tr><td colspan="3" class="muted">暂无结果</td></tr>
+        </tbody>
+      </table>
+
+      <div class="muted" style="font-size:12px; margin-top:10px;">
+        decimals 固定按 <span class="mono">18</span> 换算；并发 <span class="mono">6</span>；间隔 <span class="mono">100ms</span>（都在代码里固定）。
+      </div>
+    </div>
+  </div>
+
+<script>
+(() => {
+  const CONFIG = {
+    decimals: 18,
+    concurrency: 6,
+    delayMs: 100,
+    // 关键：同域反代接口
+    proxyApi: "/api/airdrop?address="
+  };
+
+  const $ = (id) => document.getElementById(id);
+
+  const addrInput = $("addrInput");
+  const btnStart = $("btnStart");
+  const btnStop = $("btnStop");
+  const btnClear = $("btnClear");
+
+  const statusBox = $("statusBox");
+  const resultBody = $("resultBody");
+
+  const addrCount = $("addrCount");
+  const doneCount = $("doneCount");
+  const okCount = $("okCount");
+  const failCount = $("failCount");
+  const sumFmt = $("sumFmt");
+
+  let running = false;
+  let abortController = null;
+
+  let rowRefs = [];
+  let addresses = [];
+
+  let done = 0, ok = 0, fail = 0;
+  let totalRaw = 0n;
+
+  function setStatus(text) { statusBox.textContent = "状态： " + text; }
+  const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+  function parseAddresses(text) {
+    const raw = text.split(/[\s,，;；]+/g).map(s => s.trim()).filter(Boolean);
+    const seen = new Set();
+    const list = [];
+    for (const a of raw) {
+      const k = a.toLowerCase();
+      if (!seen.has(k)) { seen.add(k); list.push(a); }
+    }
+    return list;
+  }
+
+  function formatUnits(valueStr, decimals) {
+    let s = String(valueStr || "0").trim();
+    if (s === "") s = "0";
+    if (!/^\d+$/.test(s)) return "NaN";
+
+    const v = BigInt(s);
+    const d = Math.max(0, Math.min(36, Number(decimals) || 0));
+    const base = 10n ** BigInt(d);
+    const ip = v / base;
+    const fp = v % base;
+    if (d === 0) return ip.toString();
+    let fpStr = fp.toString().padStart(d, "0").replace(/0+$/g, "");
+    return fpStr ? `${ip.toString()}.${fpStr}` : ip.toString();
+  }
+
+  function resetStats() {
+    done = 0; ok = 0; fail = 0; totalRaw = 0n;
+    doneCount.textContent = "0";
+    okCount.textContent = "0";
+    failCount.textContent = "0";
+    sumFmt.textContent = "0";
+  }
+
+  function updateSummaryUI() {
+    doneCount.textContent = String(done);
+    okCount.textContent = String(ok);
+    failCount.textContent = String(fail);
+    sumFmt.textContent = formatUnits(totalRaw.toString(), CONFIG.decimals);
+  }
+
+  function initTable(addrs) {
+    resultBody.innerHTML = "";
+    rowRefs = [];
+    const frag = document.createDocumentFragment();
+
+    for (let i = 0; i < addrs.length; i++) {
+      const tr = document.createElement("tr");
+
+      const tdAddr = document.createElement("td");
+      tdAddr.className = "mono";
+      tdAddr.textContent = addrs[i];
+
+      const tdAmt = document.createElement("td");
+      tdAmt.className = "mono right muted";
+      tdAmt.textContent = "查询中…";
+
+      const tdOk = document.createElement("td");
+      tdOk.className = "muted";
+      tdOk.textContent = "等待";
+
+      tr.append(tdAddr, tdAmt, tdOk);
+      frag.appendChild(tr);
+      rowRefs.push({ amountTd: tdAmt, statusTd: tdOk });
+    }
+
+    resultBody.appendChild(frag);
+  }
+
+  function setRowResult(i, amountFmt, isOk) {
+    const ref = rowRefs[i];
+    if (!ref) return;
+
+    if (isOk) {
+      ref.amountTd.className = "mono right";
+      ref.amountTd.textContent = amountFmt;
+      ref.statusTd.className = "ok";
+      ref.statusTd.textContent = "成功";
+    } else {
+      ref.amountTd.className = "mono right muted";
+      ref.amountTd.textContent = "-";
+      ref.statusTd.className = "bad";
+      ref.statusTd.textContent = "失败";
+    }
+  }
+
+  async function fetchOne(address, signal) {
+    const url = CONFIG.proxyApi + encodeURIComponent(address);
+    const res = await fetch(url, { method: "GET", headers: { "accept": "application/json" }, signal });
+
+    // 让请求更温和
+    if (CONFIG.delayMs > 0) await sleep(CONFIG.delayMs);
+
+    const text = await res.text();
+    let json;
+    try { json = JSON.parse(text); } catch { return { ok: false, boostRaw: "0" }; }
+
+    // 你的数据结构：json.success + json.data.amounts.boost
+    if (!res.ok || !json?.success) return { ok: false, boostRaw: "0" };
+
+    const boostRaw = String(json?.data?.amounts?.boost ?? "0");
+    return { ok: true, boostRaw };
+  }
+
+  async function runBatch() {
+    addresses = parseAddresses(addrInput.value);
+    addrCount.textContent = String(addresses.length);
+
+    if (addresses.length === 0) {
+      setStatus("请输入至少 1 个地址。");
+      return;
+    }
+
+    resetStats();
+    initTable(addresses);
+
+    running = true;
+    btnStart.disabled = true;
+    btnStop.disabled = false;
+    btnClear.disabled = true;
+
+    abortController = new AbortController();
+
+    setStatus(`开始查询：共 ${addresses.length} 个（并发 ${CONFIG.concurrency}，间隔 ${CONFIG.delayMs}ms）`);
+
+    let idx = 0;
+
+    async function worker() {
+      while (running) {
+        const my = idx++;
+        if (my >= addresses.length) break;
+
+        const address = addresses[my];
+
+        try {
+          const r = await fetchOne(address, abortController.signal);
+
+          done++;
+          if (r.ok && /^\d+$/.test(r.boostRaw)) {
+            ok++;
+            try { totalRaw += BigInt(r.boostRaw); } catch {}
+            setRowResult(my, formatUnits(r.boostRaw, CONFIG.decimals), true);
+          } else {
+            fail++;
+            setRowResult(my, "0", false);
+          }
+        } catch (e) {
+          done++; fail++;
+          setRowResult(my, "0", false);
+        }
+
+        updateSummaryUI();
+        setStatus(`进行中：${done}/${addresses.length}（成功 ${ok}，失败 ${fail}）`);
+      }
+    }
+
+    const workers = Array.from({ length: CONFIG.concurrency }, () => worker());
+    await Promise.all(workers);
+
+    running = false;
+    btnStart.disabled = false;
+    btnStop.disabled = true;
+    btnClear.disabled = false;
+
+    setStatus(`完成：共 ${done}，成功 ${ok}，失败 ${fail}。`);
+  }
+
+  function stopRun() {
+    running = false;
+    if (abortController) abortController.abort();
+    btnStop.disabled = true;
+    btnStart.disabled = false;
+    btnClear.disabled = false;
+    setStatus("已停止（正在中断请求）…");
+  }
+
+  function clearAll() {
+    addresses = [];
+    rowRefs = [];
+    resetStats();
+    addrCount.textContent = "0";
+    resultBody.innerHTML = `<tr><td colspan="3" class="muted">暂无结果</td></tr>`;
+    setStatus("已清空结果。");
+  }
+
+  btnStart.addEventListener("click", () => { if (!running) runBatch(); });
+  btnStop.addEventListener("click", stopRun);
+  btnClear.addEventListener("click", clearAll);
+
+  addrInput.addEventListener("input", () => {
+    addrCount.textContent = String(parseAddresses(addrInput.value).length);
+  });
+})();
+</script>
+</body>
+</html>
