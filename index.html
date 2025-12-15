@@ -6,29 +6,28 @@
   <title>XDoor 空投批量查询（boost）</title>
   <style>
     :root { color-scheme: light dark; }
-    body { font-family: system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,"PingFang SC","Microsoft YaHei",sans-serif; margin: 18px; line-height: 1.4; }
-    h1 { font-size: 18px; margin: 0 0 12px; }
-    .layout { display:grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-    .card { border: 1px solid rgba(127,127,127,.35); border-radius: 10px; padding: 12px; }
-    label { display:block; font-size: 12px; opacity: .9; margin-bottom: 6px; }
-    textarea { width: 100%; box-sizing: border-box; font-size: 14px; min-height: 280px; resize: vertical; padding: 10px; }
-    button { padding: 10px 12px; border-radius: 10px; border: 1px solid rgba(127,127,127,.35); cursor: pointer; font-size: 14px; }
-    button:disabled { opacity: .6; cursor: not-allowed; }
+    body { font-family: system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,"PingFang SC","Microsoft YaHei",sans-serif; margin:18px; line-height:1.4; }
+    h1 { font-size:18px; margin:0 0 12px; }
+    .layout { display:grid; grid-template-columns: 1fr 1fr; gap:12px; }
+    .card { border:1px solid rgba(127,127,127,.35); border-radius:10px; padding:12px; }
+    label { display:block; font-size:12px; opacity:.9; margin-bottom:6px; }
+    textarea { width:100%; box-sizing:border-box; font-size:14px; min-height:280px; resize:vertical; padding:10px; }
+    button { padding:10px 12px; border-radius:10px; border:1px solid rgba(127,127,127,.35); cursor:pointer; font-size:14px; }
+    button:disabled { opacity:.6; cursor:not-allowed; }
     .btns { display:flex; gap:10px; flex-wrap:wrap; margin-top:10px; }
-    .status { margin-top:10px; font-size: 12px; white-space: pre-wrap; padding: 10px; border-radius: 10px; background: rgba(127,127,127,.10); }
+    .status { margin-top:10px; font-size:12px; white-space:pre-wrap; padding:10px; border-radius:10px; background:rgba(127,127,127,.10); }
     .mono { font-family: ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,"Liberation Mono","Courier New",monospace; }
-    .pill { display:inline-block; padding: 2px 8px; border:1px solid rgba(127,127,127,.35); border-radius: 999px; font-size: 12px; }
+    .pill { display:inline-block; padding:2px 8px; border:1px solid rgba(127,127,127,.35); border-radius:999px; font-size:12px; }
     .ok { color:#1f8f3a; } .bad { color:#c23b22; } .muted { opacity:.7; }
-    table { width: 100%; border-collapse: collapse; margin-top: 10px; }
-    th, td { border-bottom: 1px solid rgba(127,127,127,.25); padding: 8px 6px; text-align: left; font-size: 13px; vertical-align: top; }
-    th { position: sticky; top: 0; background: rgba(127,127,127,.10); backdrop-filter: blur(6px); }
+    table { width:100%; border-collapse:collapse; margin-top:10px; }
+    th, td { border-bottom:1px solid rgba(127,127,127,.25); padding:8px 6px; text-align:left; font-size:13px; vertical-align:top; }
+    th { position:sticky; top:0; background:rgba(127,127,127,.10); backdrop-filter: blur(6px); }
     .right { text-align:right; }
     @media (max-width: 980px){ .layout{ grid-template-columns:1fr; } }
   </style>
 </head>
-
 <body>
-  <h1>XDoor 空投批量查询（boost）— 自建反代版</h1>
+  <h1>XDoor 空投批量查询（boost）— 自建反代（Vercel）</h1>
 
   <div class="layout">
     <div class="card">
@@ -43,7 +42,7 @@
 
       <div id="statusBox" class="status">状态：等待输入地址。</div>
       <div class="muted" style="font-size:12px; margin-top:10px;">
-        本页调用同域接口：<span class="mono">/api/airdrop?address=0x...</span>（Cloudflare Pages Functions 反向代理）
+        本页调用同域接口：<span class="mono">/api/airdrop?address=0x...</span>
       </div>
     </div>
 
@@ -59,9 +58,9 @@
       <table>
         <thead>
           <tr>
-            <th style="width: 55%;">地址</th>
-            <th style="width: 25%;">空投数量</th>
-            <th style="width: 20%;">是否成功</th>
+            <th style="width:55%;">地址</th>
+            <th style="width:25%;">空投数量</th>
+            <th style="width:20%;">是否成功</th>
           </tr>
         </thead>
         <tbody id="resultBody">
@@ -70,7 +69,7 @@
       </table>
 
       <div class="muted" style="font-size:12px; margin-top:10px;">
-        decimals 固定按 <span class="mono">18</span> 换算；并发 <span class="mono">6</span>；间隔 <span class="mono">100ms</span>（都在代码里固定）。
+        decimals 固定 18；并发 6；间隔 100ms（都写死在脚本里）。
       </div>
     </div>
   </div>
@@ -81,8 +80,7 @@
     decimals: 18,
     concurrency: 6,
     delayMs: 100,
-    // 关键：同域反代接口
-    proxyApi: "/api/airdrop?address="
+    api: "/api/airdrop?address="
   };
 
   const $ = (id) => document.getElementById(id);
@@ -110,8 +108,9 @@
   let done = 0, ok = 0, fail = 0;
   let totalRaw = 0n;
 
-  function setStatus(text) { statusBox.textContent = "状态： " + text; }
   const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+  function setStatus(t){ statusBox.textContent = "状态： " + t; }
 
   function parseAddresses(text) {
     const raw = text.split(/[\s,，;；]+/g).map(s => s.trim()).filter(Boolean);
@@ -126,9 +125,7 @@
 
   function formatUnits(valueStr, decimals) {
     let s = String(valueStr || "0").trim();
-    if (s === "") s = "0";
-    if (!/^\d+$/.test(s)) return "NaN";
-
+    if (s === "" || !/^\d+$/.test(s)) return "NaN";
     const v = BigInt(s);
     const d = Math.max(0, Math.min(36, Number(decimals) || 0));
     const base = 10n ** BigInt(d);
@@ -178,14 +175,12 @@
       frag.appendChild(tr);
       rowRefs.push({ amountTd: tdAmt, statusTd: tdOk });
     }
-
     resultBody.appendChild(frag);
   }
 
   function setRowResult(i, amountFmt, isOk) {
     const ref = rowRefs[i];
     if (!ref) return;
-
     if (isOk) {
       ref.amountTd.className = "mono right";
       ref.amountTd.textContent = amountFmt;
@@ -200,19 +195,15 @@
   }
 
   async function fetchOne(address, signal) {
-    const url = CONFIG.proxyApi + encodeURIComponent(address);
-    const res = await fetch(url, { method: "GET", headers: { "accept": "application/json" }, signal });
-
-    // 让请求更温和
+    const url = CONFIG.api + encodeURIComponent(address);
+    const res = await fetch(url, { method: "GET", headers: { accept: "application/json" }, signal });
     if (CONFIG.delayMs > 0) await sleep(CONFIG.delayMs);
 
     const text = await res.text();
     let json;
     try { json = JSON.parse(text); } catch { return { ok: false, boostRaw: "0" }; }
 
-    // 你的数据结构：json.success + json.data.amounts.boost
     if (!res.ok || !json?.success) return { ok: false, boostRaw: "0" };
-
     const boostRaw = String(json?.data?.amounts?.boost ?? "0");
     return { ok: true, boostRaw };
   }
@@ -220,11 +211,7 @@
   async function runBatch() {
     addresses = parseAddresses(addrInput.value);
     addrCount.textContent = String(addresses.length);
-
-    if (addresses.length === 0) {
-      setStatus("请输入至少 1 个地址。");
-      return;
-    }
+    if (addresses.length === 0) return setStatus("请输入至少 1 个地址。");
 
     resetStats();
     initTable(addresses);
@@ -233,7 +220,6 @@
     btnStart.disabled = true;
     btnStop.disabled = false;
     btnClear.disabled = true;
-
     abortController = new AbortController();
 
     setStatus(`开始查询：共 ${addresses.length} 个（并发 ${CONFIG.concurrency}，间隔 ${CONFIG.delayMs}ms）`);
@@ -244,12 +230,10 @@
       while (running) {
         const my = idx++;
         if (my >= addresses.length) break;
-
         const address = addresses[my];
 
         try {
           const r = await fetchOne(address, abortController.signal);
-
           done++;
           if (r.ok && /^\d+$/.test(r.boostRaw)) {
             ok++;
@@ -259,7 +243,7 @@
             fail++;
             setRowResult(my, "0", false);
           }
-        } catch (e) {
+        } catch {
           done++; fail++;
           setRowResult(my, "0", false);
         }
@@ -269,14 +253,12 @@
       }
     }
 
-    const workers = Array.from({ length: CONFIG.concurrency }, () => worker());
-    await Promise.all(workers);
+    await Promise.all(Array.from({ length: CONFIG.concurrency }, () => worker()));
 
     running = false;
     btnStart.disabled = false;
     btnStop.disabled = true;
     btnClear.disabled = false;
-
     setStatus(`完成：共 ${done}，成功 ${ok}，失败 ${fail}。`);
   }
 
@@ -290,8 +272,6 @@
   }
 
   function clearAll() {
-    addresses = [];
-    rowRefs = [];
     resetStats();
     addrCount.textContent = "0";
     resultBody.innerHTML = `<tr><td colspan="3" class="muted">暂无结果</td></tr>`;
