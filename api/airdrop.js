@@ -7,7 +7,6 @@ export default async function handler(req, res) {
 
   try {
     const address = (req.query.address || "").toString();
-
     if (!/^0x[a-fA-F0-9]{40}$/.test(address)) {
       return res.status(400).json({ success: false, message: "Invalid address" });
     }
@@ -28,8 +27,7 @@ export default async function handler(req, res) {
       "Content-Type",
       resp.headers.get("content-type") || "application/json; charset=utf-8"
     );
-    // 缓存 30s（减少上游压力；想更实时可改小）
-    res.setHeader("Cache-Control", "s-maxage=30, stale-while-revalidate=60");
+    res.setHeader("Cache-Control", "s-maxage=10, stale-while-revalidate=30");
 
     return res.status(resp.status).send(text);
   } catch (e) {
