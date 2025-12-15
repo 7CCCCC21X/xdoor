@@ -31,7 +31,6 @@
   .hint{color:var(--muted);font-size:12px}
   .summary{margin-top:10px}
   .summary b{font-weight:800}
-  .countdown{margin-left:8px;padding:2px 8px;border:1px solid var(--line);border-radius:999px;background:#fafafa;font-size:12px;color:#374151}
   table{width:100%;border-collapse:collapse}
   thead th{background:#fafafa;border-bottom:1px solid var(--line);text-align:left;padding:10px;font-size:13px;color:#374151}
   thead th.sortable{cursor:pointer;user-select:none}
@@ -68,16 +67,10 @@
     <div class="row" style="margin-top:10px">
       <button id="start" class="btn">开始查询</button>
       <button id="stop" class="btn secondary" disabled>停止</button>
-
-      <!-- 你想放官方入口就改这个链接；没有就先不放 -->
-      <a href="https://api.xdoor.meme/airdropAmount?address=0x16adb923BA68E0f0856F70cA948BBD891F2503bF" target="_blank" rel="noopener" class="btn link">接口示例</a>
-
       <a href="https://x.com/0xXIAOc" target="_blank" rel="noopener" class="btn link">作者推特 @0xXIAOc</a>
-
-      <span class="hint">已自建反代（同域 /api/airdrop），并发 6 · 间隔 100ms · decimals=18</span>
+      <span class="hint">每批并发 10 个 · 无延迟 · decimals=18 · 走同域 /api/airdrop</span>
     </div>
 
-    <!-- 筛选 / 导出 / 复制 / 隐私 -->
     <div class="row" style="margin-top:10px">
       <label class="hint"><input id="onlyOk" type="checkbox"> 只看有空投的</label>
       <label class="hint"><input id="hideAddr" type="checkbox"> 隐藏地址</label>
@@ -105,22 +98,21 @@
         <tr>
           <th style="width:60px">#</th>
           <th>地址</th>
-          <th id="thAmount" class="num sortable" style="width:180px">空投数量</th>
+          <th id="thAmount" class="num sortable" style="width:220px">空投数量</th>
           <th style="width:140px">状态</th>
         </tr>
       </thead>
       <tbody id="tbody"></tbody>
     </table>
     <div class="hint" style="margin-top:8px">
-      空投数量读取 <span class="addr">data.amounts.boost</span>，并按 decimals=18 换算展示。
+      空投读取 <span class="addr">data.amounts.boost</span>（按 decimals=18 换算显示）。排序仅用于展示，不影响真实值。
     </div>
   </div>
 </div>
 
 <script>
-  // ===== 固定参数（不在 UI 暴露）=====
-  const CONCURRENCY = 6;
-  const REQUEST_DELAY = 100;  // ms
+  // ===== 固定参数 =====
+  const BATCH_SIZE = 10;      // 一次并发 10 个
   const DECIMALS = 18;
   const API = '/api/airdrop?address=';
   const TOKEN_SYMBOL = 'boost';
@@ -137,11 +129,10 @@
 
   // ===== 状态 =====
   let aborter = null;
-  let rows = [];     // DOM 行对象
-  let results = [];  // { address, ok(boolean), amountFmt, amountNum, status }
-  let sortAmountAsc = null; // null=无排序, true=升序, false=降序
+  let rows = [];
+  let results = []; // { address, status:'queued'|'running'|'OK'|'FAIL', raw, amountFmt, amountNum }
+  let sortAmountAsc = null;
 
-  // ===== 工具 =====
   function parseAddresses(text){
     return text.replace(/\r/g,'\n')
       .split(/[\n\s,;，；]+/)
@@ -150,6 +141,15 @@
   }
   function valid(a){ return ETH_RE.test(a); }
   function setBusy(b){ startBtn.disabled=b; stopBtn.disabled=!b; }
+
+  function escapeHtml(s){
+    return String(s)
+      .replaceAll('&','&amp;')
+      .replaceAll('<','&lt;')
+      .replaceAll('>','&gt;')
+      .replaceAll('"','&quot;')
+      .replaceAll("'","&#39;");
+  }
 
   function toBigIntSafe(s){
     try{
@@ -166,24 +166,6 @@
     if (decimals === 0) return ip.toString();
     let fpStr = fp.toString().padStart(decimals, '0').replace(/0+$/,'');
     return fpStr ? `${ip.toString()}.${fpStr}` : ip.toString();
-  }
-
-  function fmtAmountForSort(amountFmt){
-    // 用 Number 做排序（够用；你这里一般不会到超出 Number 的程度，极端情况也不影响展示）
-    const n = Number(amountFmt);
-    return Number.isFinite(n) ? n : 0;
-  }
-
-  function setSummary(total, success, eligible, sumFmt){
-    summary.innerHTML = `输入地址数量 <b>${total}</b> 个 · 成功 <b>${success}</b> 个 · 有空投 <b>${eligible}</b> 个 · 总空投 <b>${sumFmt}</b> ${TOKEN_SYMBOL}`;
-  }
-
-  function updateAmountHeader(){
-    let label = '空投数量';
-    if (sortAmountAsc === true) label += ' ▲';
-    else if (sortAmountAsc === false) label += ' ▼';
-    thAmount.textContent = label;
-    thAmount.classList.add('sortable');
   }
 
   function addRow(idx, address){
@@ -209,11 +191,6 @@
         amtEl.classList.remove('num-err');
         statEl.innerHTML = `<span class="dot ok">✔</span><span> 成功</span>`;
       },
-      setZero(){
-        amtEl.textContent = '0';
-        amtEl.classList.remove('num-err');
-        statEl.innerHTML = `<span class="dot ok">✔</span><span> 成功</span>`;
-      },
       setFail(msg='失败'){
         amtEl.textContent = '0';
         amtEl.classList.add('num-err');
@@ -225,20 +202,23 @@
     };
   }
 
-  function escapeHtml(s){
-    return String(s)
-      .replaceAll('&','&amp;')
-      .replaceAll('<','&lt;')
-      .replaceAll('>','&gt;')
-      .replaceAll('"','&quot;')
-      .replaceAll("'","&#39;");
+  function updateAmountHeader(){
+    let label = '空投数量';
+    if (sortAmountAsc === true) label += ' ▲';
+    else if (sortAmountAsc === false) label += ' ▼';
+    thAmount.textContent = label;
+    thAmount.classList.add('sortable');
+  }
+
+  function setSummary(total, success, eligible, sumFmt){
+    summary.innerHTML = `输入地址数量 <b>${total}</b> 个 · 成功 <b>${success}</b> 个 · 有空投 <b>${eligible}</b> 个 · 总空投 <b>${sumFmt}</b> ${TOKEN_SYMBOL}`;
   }
 
   function applyView(){
     const onlyOk = onlyOkEl.checked;
     let idxs = results.map((_,i)=> i);
 
-    if (onlyOk) idxs = idxs.filter(i => results[i]?.amountNum > 0 && results[i]?.status === 'OK');
+    if (onlyOk) idxs = idxs.filter(i => results[i]?.status === 'OK' && (results[i]?.amountNum||0) > 0);
 
     if (sortAmountAsc !== null){
       idxs.sort((a,b)=> (results[a]?.amountNum||0) - (results[b]?.amountNum||0));
@@ -254,7 +234,6 @@
     });
 
     rows.forEach(r => r.addrEl.classList.toggle('blur', hideAddrEl.checked));
-
     updateExportButtons();
     updateAmountHeader();
   }
@@ -267,14 +246,12 @@
   }
 
   function collectForExport(onlyEligible){
-    const out = results
-      .map((r,i)=> r ? ({
-        index: i+1,
-        address: r.address,
-        amount: r.amountFmt,
-        status: r.status
-      }) : null)
-      .filter(Boolean);
+    const out = results.map((r,i)=> r ? ({
+      index: i+1,
+      address: r.address,
+      amount: r.amountFmt || '0',
+      status: r.status
+    }) : null).filter(Boolean);
 
     if (!onlyEligible) return out;
     return out.filter(r => Number(r.amount) > 0 && r.status === 'OK');
@@ -294,39 +271,14 @@
 
     let json;
     try{ json = JSON.parse(txt); } catch { throw new Error('BAD_JSON'); }
-
     if (!json?.success) throw new Error(json?.message || 'SUCCESS_FALSE');
 
     const raw = json?.data?.amounts?.boost;
-    const rawStr = (raw == null) ? '0' : String(raw);
+    const rawStr = raw == null ? '0' : String(raw);
 
     const amountFmt = formatUnits(rawStr, DECIMALS);
-    const amountNum = fmtAmountForSort(amountFmt);
-
-    return { rawStr, amountFmt, amountNum };
-  }
-
-  async function workerLoop(queue){
-    while(queue.length && !aborter.signal.aborted){
-      const i = queue.shift();
-      const row = rows[i];
-      row.setPending();
-      results[i].status = 'running';
-
-      try{
-        const r = await fetchOne(row.address, aborter.signal);
-        // 成功
-        results[i] = { address: row.address, status:'OK', amountFmt: r.amountFmt, amountNum: r.amountNum };
-        if (r.amountNum > 0) row.setOK(r.amountFmt);
-        else row.setZero();
-      }catch(e){
-        results[i] = { address: row.address, status:'FAIL', amountFmt:'0', amountNum:0 };
-        row.setFail(e?.message || 'FAIL');
-      }
-
-      applyView();
-      await new Promise(r=> setTimeout(r, REQUEST_DELAY));
-    }
+    const amountNum = Number(amountFmt);
+    return { rawStr, amountFmt, amountNum: Number.isFinite(amountNum) ? amountNum : 0 };
   }
 
   function resetUI(){
@@ -341,27 +293,69 @@
     setSummary(0,0,0,'0');
   }
 
-  function computeSummary(){
+  function recomputeSummary(){
     const total = results.length;
     const success = results.filter(r => r?.status === 'OK').length;
     const eligible = results.filter(r => r?.status === 'OK' && (r.amountNum||0) > 0).length;
 
-    // sum：用 BigInt 更准（按 raw 求和再 format）
-    // 这里为了不再请求 raw，我们用 amountFmt 近似求和（够用）；如你要精确 BigInt，我也能再加 raw 保存
-    let sum = 0;
+    // 精确总和：用 raw BigInt 累加，再 format（最稳）
+    let sumRaw = 0n;
     for (const r of results){
-      if (r?.status === 'OK') sum += (r.amountNum || 0);
+      if (r?.status === 'OK') sumRaw += toBigIntSafe(r.raw || '0');
     }
-    // 展示保留最多 6 位小数（避免太长）
-    const sumFmt = (Math.round(sum * 1e6) / 1e6).toString();
+    const sumFmt = formatUnits(sumRaw.toString(), DECIMALS);
     setSummary(total, success, eligible, sumFmt);
+  }
+
+  async function runAll(list){
+    // 分批 10 个并发，无延迟
+    for (let start = 0; start < list.length; start += BATCH_SIZE){
+      if (aborter.signal.aborted) break;
+
+      const batchIdx = [];
+      const batch = [];
+      for (let i = start; i < Math.min(list.length, start + BATCH_SIZE); i++){
+        batchIdx.push(i);
+        batch.push(list[i]);
+        rows[i].setPending();
+        results[i].status = 'running';
+      }
+
+      const ps = batch.map((addr, k) =>
+        fetchOne(addr, aborter.signal)
+          .then(r => ({ ok:true, i: batchIdx[k], r }))
+          .catch(e => ({ ok:false, i: batchIdx[k], err: e }))
+      );
+
+      const settled = await Promise.all(ps);
+
+      for (const s of settled){
+        const i = s.i;
+        const row = rows[i];
+        if (s.ok){
+          results[i] = {
+            address: row.address,
+            status: 'OK',
+            raw: s.r.rawStr,
+            amountFmt: s.r.amountFmt,
+            amountNum: s.r.amountNum
+          };
+          row.setOK(s.r.amountFmt);
+        } else {
+          results[i] = { address: row.address, status:'FAIL', raw:'0', amountFmt:'0', amountNum:0 };
+          row.setFail(s.err?.message || 'FAIL');
+        }
+      }
+
+      applyView();
+      recomputeSummary();
+    }
   }
 
   // ===== 事件 =====
   startBtn.addEventListener('click', async ()=>{
     resetUI();
 
-    // 解析 + 去重 + 过滤合法地址
     const list = Array.from(new Set(parseAddresses(addrsEl.value).filter(valid).map(a => a)));
     if (list.length === 0){
       alert('请粘贴至少一个有效 EVM 地址（0x 开头，40 位 hex）');
@@ -369,32 +363,20 @@
     }
 
     tableCard.style.display = 'block';
-
     list.forEach((addr, i)=>{
       rows.push(addRow(i, addr));
-      results.push({ address: addr, status:'queued', amountFmt:'0', amountNum:0 });
+      results.push({ address: addr, status:'queued', raw:'0', amountFmt:'0', amountNum:0 });
     });
 
     aborter = new AbortController();
     setBusy(true);
 
     try{
-      // 并发队列
-      const queue = list.map((_,i)=> i);
-      const workers = Array.from({length: CONCURRENCY}, ()=> workerLoop(queue));
-
-      // 同步 summary（定时刷新）
-      const sumTimer = setInterval(()=> computeSummary(), 250);
-
-      await Promise.all(workers);
-      clearInterval(sumTimer);
-      computeSummary();
-    }catch(e){
-      console.error(e);
-    }finally{
+      await runAll(list);
+    } finally {
       setBusy(false);
       applyView();
-      computeSummary();
+      recomputeSummary();
     }
   });
 
@@ -408,14 +390,13 @@
   hideAddrEl.addEventListener('change', applyView);
 
   thAmount.addEventListener('click', ()=>{
-    sortAmountAsc = (sortAmountAsc === null) ? false : !sortAmountAsc; // 先降序，再切换
+    sortAmountAsc = (sortAmountAsc === null) ? false : !sortAmountAsc;
     applyView();
   });
 
   btnCsv.addEventListener('click', ()=>{
     const data = collectForExport(exportOnlyOkEl.checked);
     if (data.length === 0) return;
-
     const csv = toCsv(data);
     const blob = new Blob([csv], {type:'text/csv;charset=utf-8'});
     const a = Object.assign(document.createElement('a'), {
